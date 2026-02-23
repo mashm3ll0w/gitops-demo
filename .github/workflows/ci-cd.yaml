@@ -1,4 +1,4 @@
-name: Build, Push & Deploy
+name: Build, Push & Update manifests
 
 on:
   push:
@@ -164,74 +164,3 @@ jobs:
             git commit -m "chore: update image to main-${{ needs.build-push.outputs.short-sha }} [skip ci]"
             git push
           fi
-
-  # ─────────────────────────────────────────────
-  # 4. Deploy to Kubernetes
-  # ─────────────────────────────────────────────
-  deploy:
-    name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
-    needs: [build-push, update-manifests]
-    if: github.ref == 'refs/heads/main'
-
-    environment:
-      name: production
-      url: http://python-app.local
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # Get the latest commit (after manifest update)
-          ref: main
-
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: "latest"
-
-      - name: Configure kubectl
-        # Store your kubeconfig as a GitHub secret:
-        # Settings → Secrets → KUBECONFIG (base64-encoded kubeconfig)
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Apply namespace and config
-        run: |
-          kubectl apply -f k8s/00-namespace.yaml
-          kubectl apply -f k8s/01-configmap.yaml
-
-      - name: Deploy application
-        run: |
-          kubectl apply -f k8s/02-deployment.yaml
-          kubectl apply -f k8s/03-service.yaml
-          kubectl apply -f k8s/04-ingress.yaml
-          kubectl apply -f k8s/05-hpa.yaml
-
-      - name: Wait for rollout
-        run: |
-          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --timeout=300s
-
-      - name: Verify deployment
-        run: |
-          echo "=== Pods ==="
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=python-app
-
-          echo "=== Deployment ==="
-          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -n ${{ env.K8S_NAMESPACE }}
-
-          echo "=== Service ==="
-          kubectl get service python-app -n ${{ env.K8S_NAMESPACE }}
-
-      - name: Rollback on failure
-        if: failure()
-        run: |
-          echo "Deployment failed — rolling back..."
-          kubectl rollout undo deployment/${{ env.DEPLOYMENT_NAME }} \
-            -n ${{ env.K8S_NAMESPACE }}
-          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
-            -n ${{ env.K8S_NAMESPACE }} --timeout=120s
