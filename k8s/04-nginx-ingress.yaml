@@ -1,0 +1,25 @@
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: python-app
+#   namespace: python-app
+#   labels:
+#     app: python-app
+#   annotations:
+#     # For nginx-ingress controller (local)
+#     nginx.ingress.kubernetes.io/rewrite-target: /
+#     # Rate limiting
+#     nginx.ingress.kubernetes.io/limit-rps: "10"
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - host: python-app.local
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: python-app
+#                 port:
+#                   number: 80
