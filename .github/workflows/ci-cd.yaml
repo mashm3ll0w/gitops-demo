@@ -10,7 +10,7 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/python-app
   K8S_NAMESPACE: python-app
   DEPLOYMENT_NAME: python-app
-  TIMESTAMP: ${{date +"%Y-%m-%d-%H:%M"}}
+  TIMESTAMP: ${{date +"%Y-%m-%d-%H%M"}}
 
   
 
