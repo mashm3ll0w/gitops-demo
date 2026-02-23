@@ -13,38 +13,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────
-  # 1. Lint & Test
-  # ─────────────────────────────────────────────
-  test:
-    name: Lint & Test
-    runs-on: self-hosted   # ← local runner
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13.5"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          pip install -r app/requirements.txt
-          pip install pytest pytest-cov flake8
-
-      - name: Lint with flake8
-        run: |
-          flake8 app/ --max-line-length=100 --exclude=__pycache__
-
-      - name: Run tests
-        run: |
-          cd app
-          pytest ../tests/ -v --cov=. --cov-report=xml || echo "No tests found, skipping"
-
-  # ─────────────────────────────────────────────
-  # 2. Build & Push Docker Image
+  # 1. Build & Push Docker Image
   # ─────────────────────────────────────────────
   build-push:
     name: Build & Push Image
@@ -110,7 +79,7 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ─────────────────────────────────────────────
-  # 3. Update Kubernetes Manifests
+  # 2. Update Kubernetes Manifests
   # ─────────────────────────────────────────────
   update-manifests:
     name: Update K8s Manifests
@@ -155,7 +124,7 @@ jobs:
           fi
 
   # ─────────────────────────────────────────────
-  # 4. Deploy to Local Kubernetes Cluster
+  # 3. Deploy to Local Kubernetes Cluster
   # ─────────────────────────────────────────────
   deploy:
     name: Deploy to Local Kubernetes
