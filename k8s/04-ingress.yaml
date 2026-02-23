@@ -3,6 +3,8 @@ kind: IngressRoute
 metadata:
   name: python-app-ingressroute
   namespace: python-app
+  labels:
+    app: python-app
 spec:
   entryPoints:
     - web

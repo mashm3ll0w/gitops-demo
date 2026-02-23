@@ -10,6 +10,9 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/python-app
   K8S_NAMESPACE: python-app
   DEPLOYMENT_NAME: python-app
+  TIMESTAMP: ${{date +"%Y-%m-%d-%H:%M"}}
+
+  
 
 jobs:
   # ─────────────────────────────────────────────
@@ -20,10 +23,6 @@ jobs:
     runs-on: self-hosted   # ← local runner
     if: github.ref == 'refs/heads/main'
 
-    outputs:
-      # e.g. 20250223-153045
-      image-tag: ${{ steps.vars.outputs.timestamp }}
-
     permissions:
       contents: read
       packages: write
@@ -31,11 +30,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Generate timestamp tag
-        id: vars
-        # Format: YYYYMMDD-HHMMSS in UTC — sortable and unambiguous
-        run: echo "timestamp=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,16 +53,17 @@ jobs:
           push: true
           # Two tags: timestamped (immutable) + floating latest
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.timestamp }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TIMESTAMP }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           labels: |
-            org.opencontainers.image.created=${{ steps.vars.outputs.timestamp }}
+            org.opencontainers.image.created=${{ env.TIMESTAMP }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}:{{ env.TIMESTAMP }}
           # Persist cache on the runner's local disk — faster than GHA cache
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
           build-args: |
-            BUILD_DATE=${{ steps.vars.outputs.timestamp }}
+            BUILD_DATE=${{ env.TIMESTAMP }}
             GIT_SHA=${{ github.sha }}
 
       # Rotate cache so it doesn't grow unbounded on the runner's disk
@@ -97,8 +92,7 @@ jobs:
 
       - name: Update image tag in deployment manifest
         run: |
-          TIMESTAMP="${{ needs.build-push.outputs.image-tag }}"
-          NEW_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TIMESTAMP}"
+          NEW_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TIMESTAMP }}"
 
           echo "Updating deployment image → ${NEW_IMAGE}"
 
@@ -106,7 +100,7 @@ jobs:
           sed -i "s|image: ${{ env.REGISTRY }}/.*|image: ${NEW_IMAGE}|g" k8s/02-deployment.yaml
 
           # Stamp APP_VERSION with the same timestamp for traceability
-          sed -i "s|APP_VERSION: .*|APP_VERSION: \"${TIMESTAMP}\"|g" k8s/01-configmap.yaml
+          sed -i "s|APP_VERSION: .*|APP_VERSION: \"${{ env.TIMESTAMP }}\"|g" k8s/01-configmap.yaml
 
       - name: Commit and push manifest changes
         run: |
@@ -142,12 +136,6 @@ jobs:
           # Pull the post-manifest-update commit so we deploy the right tag
           ref: main
 
-      # ── Load image into minikube (skip if using kind or a real cluster) ─────
-      # The runner built the image into its local Docker daemon already.
-      # minikube image load pulls it from the daemon into the cluster without
-      # going through a remote registry — useful when GHCR isn't accessible
-      # from inside the cluster or you just want faster deploys.
-
       # ── No secrets needed: runner uses ~/.kube/config on the local machine ──
       - name: Verify cluster connection
         run: |
@@ -175,7 +163,7 @@ jobs:
       - name: Verify deployment
         run: |
           echo "=== Image deployed ==="
-          echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-push.outputs.image-tag }}"
+          echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TIMESTAMP }}"
 
           echo ""
           echo "=== Pods ==="
