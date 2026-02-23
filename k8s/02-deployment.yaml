@@ -29,7 +29,7 @@ spec:
       containers:
         - name: python-app
           # IMAGE_TAG is replaced by the CI/CD pipeline
-          image: ghcr.io/mashm3ll0w/python-app:main-b41595b
+          image: ghcr.io/mashm3ll0w/python-app:20260223-120956
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
