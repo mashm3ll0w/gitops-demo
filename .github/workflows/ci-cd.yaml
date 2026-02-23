@@ -18,7 +18,6 @@ jobs:
   build-push:
     name: Build & Push Image
     runs-on: self-hosted   # ← local runner
-    needs: test
     if: github.ref == 'refs/heads/main'
 
     outputs:
