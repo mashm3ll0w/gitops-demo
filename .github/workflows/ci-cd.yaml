@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "app/**"
 
 env:
   REGISTRY: ghcr.io
@@ -37,7 +39,7 @@ jobs:
       - name: Generate timestamp tag
         id: vars
         # Format: YYYY-MM-DD-HHMM in UTC — sortable and unambiguous
-        run: echo "timestamp=$(date +'%Y%-m%d-%H%M')" >> $GITHUB_OUTPUT
+        run: echo "timestamp=$(date +'%Y-%m-%d:%H%M')" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
