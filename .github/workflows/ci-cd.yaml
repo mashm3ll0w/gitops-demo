@@ -1,18 +1,9 @@
-name: Build, Push & Update manifests
+name: Build, Push & Deploy
 
 on:
   push:
     branches:
       - main
-    paths:
-      - "app/**"
-      - "k8s/**"
-      - ".github/workflows/**"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "app/**"
 
 env:
   REGISTRY: ghcr.io
@@ -26,7 +17,7 @@ jobs:
   # ─────────────────────────────────────────────
   test:
     name: Lint & Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted   # ← local runner
 
     steps:
       - name: Checkout code
@@ -57,14 +48,13 @@ jobs:
   # ─────────────────────────────────────────────
   build-push:
     name: Build & Push Image
-    runs-on: ubuntu-latest
+    runs-on: self-hosted   # ← local runner
     needs: test
     if: github.ref == 'refs/heads/main'
 
     outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-      image-digest: ${{ steps.build.outputs.digest }}
-      short-sha: ${{ steps.vars.outputs.short-sha }}
+      # e.g. 20250223-153045
+      image-tag: ${{ steps.vars.outputs.timestamp }}
 
     permissions:
       contents: read
@@ -74,15 +64,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set short SHA
+      - name: Generate timestamp tag
         id: vars
-        run: echo "short-sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Set up QEMU (multi-arch builds)
-        uses: docker/setup-qemu-action@v3
+        # Format: YYYYMMDD-HHMMSS in UTC — sortable and unambiguous
+        run: echo "timestamp=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Use the local docker driver so the image lands in the daemon
+          # immediately — no separate pull needed by minikube image load
+          driver: docker
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -91,46 +83,43 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            # Tag with branch + short SHA  (e.g. main-abc1234)
-            type=ref,event=branch,suffix=-${{ steps.vars.outputs.short-sha }}
-            # Floating "latest" on main
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            # Semantic version tags when a git tag is pushed
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
       - name: Build and push Docker image
         id: build
         uses: docker/build-push-action@v5
         with:
           context: ./app
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Two tags: timestamped (immutable) + floating latest
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.timestamp }}
+          labels: |
+            org.opencontainers.image.created=${{ steps.vars.outputs.timestamp }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Persist cache on the runner's local disk — faster than GHA cache
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
           build-args: |
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.vars.outputs.timestamp }}
             GIT_SHA=${{ github.sha }}
+
+      # Rotate cache so it doesn't grow unbounded on the runner's disk
+      - name: Rotate build cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ─────────────────────────────────────────────
   # 3. Update Kubernetes Manifests
   # ─────────────────────────────────────────────
   update-manifests:
     name: Update K8s Manifests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted   # ← local runner
     needs: build-push
     if: github.ref == 'refs/heads/main'
 
     permissions:
-      contents: write   # needed to push manifest changes
+      contents: write
 
     steps:
       - name: Checkout code
@@ -140,16 +129,16 @@ jobs:
 
       - name: Update image tag in deployment manifest
         run: |
-          SHORT_SHA="${{ needs.build-push.outputs.short-sha }}"
-          NEW_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-${SHORT_SHA}"
+          TIMESTAMP="${{ needs.build-push.outputs.image-tag }}"
+          NEW_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TIMESTAMP}"
 
-          echo "Updating deployment image to: $NEW_IMAGE"
+          echo "Updating deployment image → ${NEW_IMAGE}"
 
-          # Replace the image line in the deployment YAML
+          # Replace image line in deployment
           sed -i "s|image: ${{ env.REGISTRY }}/.*|image: ${NEW_IMAGE}|g" k8s/02-deployment.yaml
 
-          # Update the APP_VERSION in ConfigMap
-          sed -i "s|APP_VERSION: .*|APP_VERSION: \"${SHORT_SHA}\"|g" k8s/01-configmap.yaml
+          # Stamp APP_VERSION with the same timestamp for traceability
+          sed -i "s|APP_VERSION: .*|APP_VERSION: \"${TIMESTAMP}\"|g" k8s/01-configmap.yaml
 
       - name: Commit and push manifest changes
         run: |
@@ -159,8 +148,85 @@ jobs:
           git add k8s/02-deployment.yaml k8s/01-configmap.yaml
 
           if git diff --staged --quiet; then
-            echo "No manifest changes to commit."
+            echo "No manifest changes — skipping commit."
           else
-            git commit -m "chore: update image to main-${{ needs.build-push.outputs.short-sha }} [skip ci]"
+            git commit -m "chore: deploy image ${{ needs.build-push.outputs.image-tag }} [skip ci]"
             git push
           fi
+
+  # ─────────────────────────────────────────────
+  # 4. Deploy to Local Kubernetes Cluster
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Local Kubernetes
+    runs-on: self-hosted   # ← local runner, kubectl talks to local cluster directly
+    needs: [build-push, update-manifests]
+    if: github.ref == 'refs/heads/main'
+
+    environment:
+      name: local
+      url: http://python-app.local
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Pull the post-manifest-update commit so we deploy the right tag
+          ref: main
+
+      # ── Load image into minikube (skip if using kind or a real cluster) ─────
+      # The runner built the image into its local Docker daemon already.
+      # minikube image load pulls it from the daemon into the cluster without
+      # going through a remote registry — useful when GHCR isn't accessible
+      # from inside the cluster or you just want faster deploys.
+
+      # ── No secrets needed: runner uses ~/.kube/config on the local machine ──
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Apply namespace and config
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-configmap.yaml
+
+      - name: Deploy application
+        run: |
+          kubectl apply -f k8s/02-deployment.yaml
+          kubectl apply -f k8s/03-service.yaml
+          kubectl apply -f k8s/04-ingress.yaml
+          kubectl apply -f k8s/05-hpa.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          echo "=== Image deployed ==="
+          echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-push.outputs.image-tag }}"
+
+          echo ""
+          echo "=== Pods ==="
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=python-app -o wide
+
+          echo ""
+          echo "=== Deployment ==="
+          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -n ${{ env.K8S_NAMESPACE }}
+
+          echo ""
+          echo "=== Service ==="
+          kubectl get service python-app -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed — rolling back..."
+          kubectl rollout undo deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n ${{ env.K8S_NAMESPACE }} --timeout=120s
+          echo "Rollback complete."

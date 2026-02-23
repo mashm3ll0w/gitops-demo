@@ -42,10 +42,8 @@ minikube addons enable ingress
 minikube addons enable metrics-server   # needed for HPA
 ```
 
-### 3. Build image inside minikube (no registry needed locally)
+### 3. Build image and push to GitHub Container Registry (ghcr.io)
 ```bash
-# Point docker CLI to minikube's daemon
-eval $(minikube docker-env)
 
 docker login ghcr.io -u YOUR_USERNAME # provide the access token you created as the password
 
