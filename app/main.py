@@ -2,7 +2,9 @@ from flask import Flask, jsonify
 import os
 import socket
 
+
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
@@ -13,13 +15,16 @@ def home():
         "environment": os.getenv("APP_ENV", "development"),
     })
 
+
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy"}), 200
 
+
 @app.route("/ready")
 def ready():
     return jsonify({"status": "ready"}), 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
